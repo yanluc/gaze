@@ -41,6 +41,7 @@ mod access;
 mod benchmark;
 mod config;
 mod interface;
+mod orientation;
 mod verify;
 mod watch;
 

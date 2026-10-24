@@ -164,6 +164,9 @@ overrides:
       - gstreamer1.0-plugins-good
       - gstreamer1.0-pipewire
 ${DEB_LIB_DEPENDS}
+    # Screen orientation for convertibles, so face auth works in tablet mode.
+    recommends:
+      - iio-sensor-proxy
   rpm:
     scripts:
       postinstall: "packaging/scriptlets/postinst-rpm.sh"
@@ -174,6 +177,8 @@ ${DEB_LIB_DEPENDS}
       - gstreamer1-plugins-good
       - pipewire-gstreamer
 ${RPM_LIB_DEPENDS}
+    recommends:
+      - iio-sensor-proxy
   archlinux:
     scripts:
       postinstall: "packaging/scriptlets/postinst-arch.sh"
@@ -189,3 +194,5 @@ ${RPM_LIB_DEPENDS}
       - gst-plugins-base
       - gst-plugins-good
       - gst-plugin-pipewire
+    recommends:
+      - iio-sensor-proxy

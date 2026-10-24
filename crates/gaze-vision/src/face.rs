@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::detect::{DetectError, FaceDetector};
+use crate::orientation::{OrientationHint, Rotation, RotationSearch};
 use gaze_core::config::Config;
 use gaze_core::dbus::{CaptureStatus, EnrollPrompt};
 use opencv::core::Mat;
@@ -338,6 +339,8 @@ pub struct FaceChecker {
     pub spectrum: Spectrum,
     pub check_centering_and_proximity: bool,
     pub min_face_size_ratio: f32,
+    orientation: OrientationHint,
+    rotation_search: RotationSearch,
 }
 
 impl FaceChecker {
@@ -355,7 +358,16 @@ impl FaceChecker {
             spectrum,
             check_centering_and_proximity,
             min_face_size_ratio: config.enrollment.effective_min_face_size_ratio(),
+            orientation: OrientationHint::default(),
+            rotation_search: RotationSearch::default(),
         }
+    }
+
+    /// Follows the device's orientation sensor, so a camera turned with the screen of a
+    /// convertible still finds an upright face. Results are in the upright frame's coordinates.
+    pub fn with_orientation(mut self, orientation: OrientationHint) -> Self {
+        self.orientation = orientation;
+        self
     }
 
     fn build_capture_result(
@@ -400,15 +412,24 @@ impl FaceChecker {
             return Ok((status, None));
         }
 
-        let detection = {
-            let mut detector = lock_recover(&self.detector);
-            detector.detect(frame)
+        let sensor = self.orientation.get();
+        let detector = &self.detector;
+        let detection =
+            self.rotation_search.detect(sensor, frame, |turned| {
+                match lock_recover(detector).detect(turned) {
+                    Ok(result) => Ok(Some(result)),
+                    Err(DetectError::NoFacesDetected) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            })?;
+        let Some((rotation, rotated, (bboxes, kps, mat_rgb))) = detection else {
+            return Ok((CaptureStatus::NoFace, None));
         };
-        let (bboxes, kps, mat_rgb) = match detection {
-            Ok(result) => result,
-            Err(DetectError::NoFacesDetected) => return Ok((CaptureStatus::NoFace, None)),
-            Err(err) => return Err(err.into()),
-        };
+        if self.rotation_search.found(rotation) && rotation != Rotation::Upright {
+            tracing::info!(?rotation, ?sensor, "Face found in a turned frame");
+        }
+        // Everything below, and every caller, works in the upright frame's coordinates.
+        let frame = rotated.as_ref().unwrap_or(frame);
 
         let face = bboxes.row(0);
         let x1 = face[0];

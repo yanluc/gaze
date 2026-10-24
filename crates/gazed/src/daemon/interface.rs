@@ -305,6 +305,7 @@ impl AuthDaemon {
         let ir_device = sources.ir;
         let ir_node = sources.ir_node;
         let emitter_enabled = config.cameras.emitter_enabled;
+        let orientation = self.orientation_hint(ctxt.connection());
         let conn = ctxt.connection().clone();
         let path = ctxt.path().to_owned();
         let claim_state = self.claim_state.clone();
@@ -394,9 +395,11 @@ impl AuthDaemon {
                 let rgb_device_clone = rgb_device.clone();
                 let rgb_captured_for_step_clone = rgb_captured_for_step.clone();
                 let preview_tx_clone = preview_tx.clone();
+                let rgb_orientation = orientation.clone();
 
                 rgb_thread = Some(std::thread::spawn(move || {
-                    let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Rgb, true);
+                    let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Rgb, true)
+                        .with_orientation(rgb_orientation);
                     let mut preview = PreviewStream::new(preview_tx_clone);
                     let mut pose_baseline = None;
 
@@ -593,9 +596,11 @@ impl AuthDaemon {
                 let ir_node_clone = ir_node.clone();
                 let rgb_captured_for_step_clone = rgb_captured_for_step.clone();
                 let preview_tx_clone = preview_tx.clone();
+                let ir_orientation = orientation.clone();
 
                 ir_thread = Some(std::thread::spawn(move || {
-                    let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Ir, true);
+                    let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Ir, true)
+                        .with_orientation(ir_orientation);
                     let mut dark_gate = IrDarkFrameGate::new(config_clone.cameras.dark_luma_threshold);
                     let mut preview = PreviewStream::new(preview_tx_clone);
 

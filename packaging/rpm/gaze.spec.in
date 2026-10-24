@@ -103,6 +103,8 @@ Requires:       pipewire-gstreamer
 %endif
 
 Requires:       pam
+# Screen orientation for convertibles, so face auth works in tablet mode.
+Recommends:     iio-sensor-proxy
 Provides:       bundled(onnxruntime) = %{ort_version}
 
 %description

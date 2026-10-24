@@ -39,6 +39,12 @@ At a high level, authentication works as follows:
 
 Authentication succeeds when the best similarity and liveness scores both meet their configured thresholds.
 
+## Convertibles and tablet mode
+
+On a 2-in-1 the camera sits in the screen bezel and turns with it, so in portrait or upside down its frames arrive rotated, and the face detector only finds upright faces. At the start of each authentication and enrollment, Gaze reads which screen edge points up from [iio-sensor-proxy](https://gitlab.freedesktop.org/hadess/iio-sensor-proxy) over the system D-Bus and turns frames upright before detection. Every later step, from recognition to liveness, then works on the upright frame. If the expected rotation finds no face, Gaze also tries the other rotations, one per frame, and keeps whichever finds one.
+
+This reads the physical orientation, so it works on the lock screen, in a greeter, or on a text console, with screen auto-rotation on or locked, and with any desktop. It needs iio-sensor-proxy running; the packages recommend it, and GNOME and KDE Plasma usually install it already. On NixOS, set `hardware.sensor.iio.enable = true`. Without it, or on a device without an accelerometer, frames are used as they come, exactly as on a regular laptop. The daemon log (`journalctl -u gazed`) notes when a face was found in a turned frame and what the sensor said.
+
 ## One authentication attempt
 
 Everything below happens once per `gaze auth`, PAM prompt, or lock screen unlock. The

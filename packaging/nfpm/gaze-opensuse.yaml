@@ -98,3 +98,6 @@ overrides:
       - gstreamer-plugins-good
       - gstreamer-plugin-pipewire
 ${RPM_LIB_DEPENDS}
+    # Screen orientation for convertibles, so face auth works in tablet mode.
+    recommends:
+      - iio-sensor-proxy

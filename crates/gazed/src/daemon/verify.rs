@@ -400,6 +400,7 @@ impl AuthDaemon {
         let duress_lockout = self.duress_lockout.clone();
         let duress_locked = duress_lockout.is_locked(&username);
         let camera_lease = self.camera_lease.clone();
+        let orientation = self.orientation_hint(ctxt.connection());
         let conn = ctxt.connection().clone();
         let path = ctxt.path().to_owned();
 
@@ -593,6 +594,7 @@ impl AuthDaemon {
                     let liveness_enabled = liveness_cfg.enabled;
                     let liveness_threshold = liveness_cfg.effective_threshold();
                     let rgb_device_clone = rgb_device.clone();
+                    let orientation = orientation.clone();
                     let rgb_phase_done_clone = rgb_phase_done.clone();
                     let hybrid_policy_clone = hybrid_policy.clone();
                     let eye_state_arc = eye_state_arc.clone();
@@ -626,7 +628,8 @@ impl AuthDaemon {
                         tracing::debug!("RGB camera opened successfully at: {}", rgb_device_clone);
                         let _ = tx.blocking_send(VerifyMsg::PhaseStarted(Spectrum::Rgb));
 
-                        let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Rgb, false);
+                        let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Rgb, false)
+                            .with_orientation(orientation);
                         let mut warmup = RgbWarmupGate::new(config_clone.cameras.dark_luma_threshold);
                         // A bright background can settle the whole-frame gate while the face
                         // is still underexposed. Give face exposure its own bounded warmup.
@@ -831,6 +834,7 @@ impl AuthDaemon {
                     let liveness_enabled = liveness_cfg.enabled;
                     let ir_device_clone = ir_device.clone();
                     let ir_node_clone = ir_node.clone();
+                    let orientation = orientation.clone();
                     let emitter_enabled = emitter_enabled;
                     let serial_capture = serial_capture;
                     let rgb_phase_done_clone = rgb_phase_done.clone();
@@ -872,7 +876,8 @@ impl AuthDaemon {
 
                         let _ = tx.blocking_send(VerifyMsg::PhaseStarted(Spectrum::Ir));
 
-                        let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Ir, false);
+                        let mut checker = FaceChecker::new(detector_arc, &config_clone, Spectrum::Ir, false)
+                            .with_orientation(orientation);
                         let mut dark_gate = IrDarkFrameGate::new(config_clone.cameras.dark_luma_threshold);
                         let mut logged_lit_luma = false;
                         let mut logged_dark_luma = false;
