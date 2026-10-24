@@ -5,6 +5,7 @@ use super::*;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 
 /// Applied settings; read guards pin their model generation through teardown.
+#[derive(Clone)]
 pub struct ConfigState {
     current: Arc<RwLock<Config>>,
     updates: Arc<Mutex<()>>,
@@ -283,73 +284,82 @@ impl AuthDaemon {
         &self,
         update: impl FnOnce(Config) -> fdo::Result<Config> + Send + 'static,
     ) -> fdo::Result<()> {
+        let settings = self.settings.clone();
+        let active_cancel = self.active_cancel.clone();
         let db = self.db.clone();
         let models = self.models.clone();
         let current_models = models.clone();
         let liveness = self.liveness.clone();
         let eye_state = self.eye_state.clone();
-        self.settings
-            .apply(
-                &self.active_cancel,
-                move |current| {
-                    let mut requested = update(current.clone())?;
-                    requested.duress = current.duress.clone();
-                    requested
-                        .security
-                        .validate()
-                        .and_then(|_| requested.enrollment.validate())
-                        .and_then(|_| requested.inference.validate())
-                        .and_then(|_| requested.liveness.validate())
-                        .and_then(|_| requested.cameras.validate())
-                        .and_then(|_| requested.smile.validate())
-                        .and_then(|_| requested.storage.validate_keyring(&requested.liveness))
-                        .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
-                    let loaded = current_models
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .clone();
-                    let prepared = PreparedConfig::load(&current, &requested, &loaded)?;
-                    Ok((requested, prepared))
-                },
-                move |requested, prepared| {
-                    let migrated = db
-                        .blocking_lock()
-                        .apply_settings(
-                            prepared.cipher,
-                            requested.storage.encrypt_templates,
-                            prepared
-                                .reload
-                                .recognizer
-                                .then_some(requested.security.recognizer()),
-                            requested.enrollment.max_templates as usize,
-                            || requested.save_to(CONFIG_PATH),
-                        )
-                        .map_err(|e| {
-                            fdo::Error::Failed(format!(
-                                "Failed to apply template storage settings: {e}"
-                            ))
-                        })?;
-                    if migrated > 0 {
-                        info!(
-                            migrated,
-                            encrypted = requested.storage.encrypt_templates,
-                            "Changed template encryption"
-                        );
-                    }
+        // zbus dispatches methods on its own executor, but applying spawns blocking work and
+        // needs the Tokio runtime, so run it there and only await the outcome here.
+        let applying = self.rt_handle.spawn(async move {
+            settings
+                .apply(
+                    &active_cancel,
+                    move |current| {
+                        let mut requested = update(current.clone())?;
+                        requested.duress = current.duress.clone();
+                        requested
+                            .security
+                            .validate()
+                            .and_then(|_| requested.enrollment.validate())
+                            .and_then(|_| requested.inference.validate())
+                            .and_then(|_| requested.liveness.validate())
+                            .and_then(|_| requested.cameras.validate())
+                            .and_then(|_| requested.smile.validate())
+                            .and_then(|_| requested.storage.validate_keyring(&requested.liveness))
+                            .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+                        let loaded = current_models
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .clone();
+                        let prepared = PreparedConfig::load(&current, &requested, &loaded)?;
+                        Ok((requested, prepared))
+                    },
+                    move |requested, prepared| {
+                        let migrated = db
+                            .blocking_lock()
+                            .apply_settings(
+                                prepared.cipher,
+                                requested.storage.encrypt_templates,
+                                prepared
+                                    .reload
+                                    .recognizer
+                                    .then_some(requested.security.recognizer()),
+                                requested.enrollment.max_templates as usize,
+                                || requested.save_to(CONFIG_PATH),
+                            )
+                            .map_err(|e| {
+                                fdo::Error::Failed(format!(
+                                    "Failed to apply template storage settings: {e}"
+                                ))
+                            })?;
+                        if migrated > 0 {
+                            info!(
+                                migrated,
+                                encrypted = requested.storage.encrypt_templates,
+                                "Changed template encryption"
+                            );
+                        }
 
-                    // No fallible work remains, and every model user has finished teardown.
-                    *models.lock().unwrap_or_else(|error| error.into_inner()) = prepared.models;
-                    if prepared.reload.liveness {
-                        *liveness.blocking_lock() = prepared.liveness;
-                    }
-                    if prepared.reload.inference {
-                        *eye_state.blocking_lock() = None;
-                    }
-                    info!("Config reloaded successfully");
-                    Ok(())
-                },
-            )
+                        // No fallible work remains, and every model user has finished teardown.
+                        *models.lock().unwrap_or_else(|error| error.into_inner()) = prepared.models;
+                        if prepared.reload.liveness {
+                            *liveness.blocking_lock() = prepared.liveness;
+                        }
+                        if prepared.reload.inference {
+                            *eye_state.blocking_lock() = None;
+                        }
+                        info!("Config reloaded successfully");
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        applying
             .await
+            .map_err(|e| fdo::Error::Failed(format!("Config update task failed: {e}")))?
     }
 }
 
