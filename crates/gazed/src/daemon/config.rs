@@ -301,6 +301,7 @@ impl AuthDaemon {
                         .and_then(|_| requested.inference.validate())
                         .and_then(|_| requested.liveness.validate())
                         .and_then(|_| requested.cameras.validate())
+                        .and_then(|_| requested.smile.validate())
                         .and_then(|_| requested.storage.validate_keyring(&requested.liveness))
                         .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
                     let loaded = current_models

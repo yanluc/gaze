@@ -272,6 +272,39 @@ impl AuthDaemon {
         self.config_invalidate(&ctxt).await.map_err(Into::into)
     }
 
+    async fn smile_requirement(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<(bool, f64)> {
+        Self::ensure_config_read_access(&header).await?;
+        let smile = self.current_config().await.smile;
+        Ok((smile.enabled, smile.min_ratio))
+    }
+
+    async fn set_smile_requirement(
+        &self,
+        #[zbus(signal_emitter)] ctxt: SignalEmitter<'_>,
+        #[zbus(header)] header: Header<'_>,
+        enabled: bool,
+        min_ratio: f64,
+    ) -> fdo::Result<()> {
+        Self::ensure_authorized(&header, POLKIT_ACTION_MANAGE_CONFIG).await?;
+        let requested = gaze_core::config::SmileConfig { enabled, min_ratio };
+        requested
+            .validate()
+            .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        let current = self.current_config().await.smile;
+        if current.enabled == enabled && current.min_ratio == min_ratio {
+            return Ok(());
+        }
+        self.apply_config(move |mut config| {
+            config.smile = requested;
+            Ok(config)
+        })
+        .await?;
+        self.config_invalidate(&ctxt).await.map_err(Into::into)
+    }
+
     async fn verify_stop(&self, #[zbus(header)] header: Header<'_>) -> fdo::Result<()> {
         let claim = self.check_claim(&header).await?;
         cancel_claim_task(&self.claim_state, &self.active_cancel, claim.epoch).await
@@ -1209,6 +1242,7 @@ impl AuthDaemon {
             new_config
                 .cameras
                 .set_ir_frame_size(current.cameras.ir_frame_size());
+            new_config.smile = current.smile.clone();
             // A legacy client cannot see or clear the flag, so treat it as turning the feature
             // off rather than rejecting every later write with an error it cannot act on.
             if new_config.clamp_keyring() {
@@ -1237,6 +1271,7 @@ impl AuthDaemon {
             config
                 .cameras
                 .set_ir_frame_size(current.cameras.ir_frame_size());
+            config.smile = current.smile.clone();
             // This older client cannot clear a KWallet opt-in when removing prerequisites.
             if config.storage.validate_keyring(&config.liveness).is_err() {
                 config.storage.unlock_kwallet = false;
@@ -1267,6 +1302,7 @@ impl AuthDaemon {
             config
                 .cameras
                 .set_ir_frame_size(current.cameras.ir_frame_size());
+            config.smile = current.smile.clone();
             Ok(config)
         })
         .await?;

@@ -68,6 +68,10 @@ unlock_gnome_keyring = false
 enabled = false
 closed_threshold = 0.9
 hold_ms = 600
+
+[smile]
+enabled = false
+min_ratio = 0.95
 ```
 
 ## Upgrades
@@ -673,6 +677,31 @@ Limits to be aware of:
 - Close your eye before the camera sees you. Any matched frame with both eyes open unlocks as usual.
 - Another non-face login method, such as a fingerprint, also clears the lock.
 - The classifier works on RGB and IR frames, but it is not perfect. Test it with `gaze auth` before relying on it: a held wink should end in a lockout, and `gaze duress --clear` resets it. Running `gazed` with `RUST_LOG=debug` logs the per-eye scores.
+
+## Smile to Unlock
+
+```toml
+[smile]
+enabled = false
+min_ratio = 0.95
+```
+
+With `enabled = true`, a recognized face unlocks only while it smiles. A glance at the screen, or someone holding the laptop to your sleeping face, is not enough. The GUI shows it as **Smile to Unlock**.
+
+How it works:
+
+- Gaze needs no extra model for this. The face detector already finds five points on your face: both eyes, the nose and both mouth corners. Gaze divides the distance between the mouth corners by the distance between the eyes. A smile pulls the corners outward while the eyes stay put, so the ratio rises.
+- Both distances shrink together when you turn your head or sit farther away, so the ratio barely depends on pose or distance. It works on RGB and IR cameras.
+- Frames that match but do not smile are skipped, not rejected, so you can smile at any point before the attempt times out. Liveness, when enabled, is judged only on smiling frames.
+
+Settings:
+
+- `min_ratio` (0.6 to 1.5) is how strong the smile has to be. A relaxed mouth usually measures 0.8 to 0.9 and a clear smile 1.0 or more, but faces differ. Run `gaze auth --verbose` once with a straight face and once smiling: the diagnostics print `waiting for a smile: smile_ratio=…` and `smile accepted: smile_ratio=…`. Pick a value between the two readings.
+
+Limits to be aware of:
+
+- This prevents accidental unlocks. It is not anti-spoofing: a photo of you smiling still has a smiling mouth. Keep `[liveness]` on for that.
+- Wide-mouthed expressions other than a smile, such as a grimace, also raise the ratio.
 
 ## Recommended tuning workflow
 

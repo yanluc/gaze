@@ -56,6 +56,9 @@ pub const MIN_DURESS_CLOSED_THRESHOLD: f64 = 0.5;
 pub const MAX_DURESS_CLOSED_THRESHOLD: f64 = 0.99;
 pub const DEFAULT_DURESS_HOLD_MS: u64 = 600;
 pub const MAX_DURESS_HOLD_MS: u64 = 5000;
+pub const DEFAULT_SMILE_MIN_RATIO: f64 = 0.95;
+pub const MIN_SMILE_MIN_RATIO: f64 = 0.6;
+pub const MAX_SMILE_MIN_RATIO: f64 = 1.5;
 pub const MAX_IR_FRAME_DIMENSION: u32 = 4096;
 const DEFAULT_CONFIG_MODE: u32 = 0o644;
 
@@ -89,6 +92,8 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub duress: DuressConfig,
+    #[serde(default)]
+    pub smile: SmileConfig,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -279,6 +284,56 @@ impl DuressConfig {
 
     pub fn effective_hold(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.hold_ms.min(MAX_DURESS_HOLD_MS))
+    }
+}
+
+/// Requires a smile after the face matches, so a glance at the camera does not unlock.
+/// `min_ratio` is the mouth-corner distance divided by the eye distance, both taken from the
+/// detector's landmarks. A neutral mouth sits around 0.8-0.9; a clear smile reaches 1.0 or more.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SmileConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_smile_min_ratio")]
+    pub min_ratio: f64,
+}
+
+fn default_smile_min_ratio() -> f64 {
+    DEFAULT_SMILE_MIN_RATIO
+}
+
+impl Default for SmileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_ratio: default_smile_min_ratio(),
+        }
+    }
+}
+
+impl SmileConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !Self::min_ratio_in_range(self.min_ratio) {
+            anyhow::bail!(
+                "smile.min_ratio must be between {} and {}, got {}",
+                MIN_SMILE_MIN_RATIO,
+                MAX_SMILE_MIN_RATIO,
+                self.min_ratio
+            );
+        }
+        Ok(())
+    }
+
+    fn min_ratio_in_range(ratio: f64) -> bool {
+        ratio.is_finite() && (MIN_SMILE_MIN_RATIO..=MAX_SMILE_MIN_RATIO).contains(&ratio)
+    }
+
+    pub fn effective_min_ratio(&self) -> f32 {
+        if Self::min_ratio_in_range(self.min_ratio) {
+            self.min_ratio as f32
+        } else {
+            DEFAULT_SMILE_MIN_RATIO as f32
+        }
     }
 }
 
@@ -888,6 +943,7 @@ impl Config {
         config.liveness.validate()?;
         config.cameras.validate()?;
         config.duress.validate()?;
+        config.smile.validate()?;
         Ok(config)
     }
 
@@ -933,6 +989,9 @@ impl Config {
             }
             if let Err(e) = config.duress.validate() {
                 tracing::warn!("{e}; using the default duress settings");
+            }
+            if let Err(e) = config.smile.validate() {
+                tracing::warn!("{e}; using the default smile ratio");
             }
             Ok(config)
         } else {

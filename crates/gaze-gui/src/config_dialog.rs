@@ -5,8 +5,9 @@ use gaze_core::config::{
     AuthConfig, CameraConfig, Config, DEFAULT_RGB_CAMERA, HYBRID_POLICY_LABELS,
     INFERENCE_DEVICE_LABELS, INFERENCE_EXECUTION_PROVIDER_LABELS, InferenceConfig,
     MAX_ENROLLMENT_FACE_SIZE_RATIO, MAX_IR_FRAME_DIMENSION, MAX_LIVENESS_MAX_SECONDS,
-    MIN_ENROLLMENT_FACE_SIZE_RATIO, MIN_LIVENESS_MAX_SECONDS, MODEL_QUALITY_LABELS,
-    PARALLEL_CAPTURE_LABELS, SECURITY_LEVEL_LABELS, START_DELAY_SCOPE_LABELS, SecurityLevel,
+    MAX_SMILE_MIN_RATIO, MIN_ENROLLMENT_FACE_SIZE_RATIO, MIN_LIVENESS_MAX_SECONDS,
+    MIN_SMILE_MIN_RATIO, MODEL_QUALITY_LABELS, PARALLEL_CAPTURE_LABELS, SECURITY_LEVEL_LABELS,
+    START_DELAY_SCOPE_LABELS, SecurityLevel,
 };
 use gaze_core::dbus::{
     GazeProxy, apply_config_to_daemon, apply_config_with_keyring_to_daemon, connect_gaze,
@@ -70,6 +71,17 @@ fn set_liveness_config_rows_visible(
     let active = liveness_rows_visible(enabled_switch.is_active());
     threshold_row.set_visible(active);
     max_seconds_row.set_visible(active);
+}
+
+fn smile_rows_visible(enabled: bool) -> bool {
+    enabled
+}
+
+fn set_smile_config_rows_visible(
+    enabled_switch: &gtk4::Switch,
+    min_ratio_row: &libadwaita::SpinRow,
+) {
+    min_ratio_row.set_visible(smile_rows_visible(enabled_switch.is_active()));
 }
 
 fn keyring_sensitivity(
@@ -242,6 +254,8 @@ struct ConfigRows {
     liveness_enabled: gtk4::Switch,
     liveness_threshold: libadwaita::SpinRow,
     liveness_max_seconds: libadwaita::SpinRow,
+    smile_enabled: gtk4::Switch,
+    smile_min_ratio: libadwaita::SpinRow,
     require_confirm_lock_screen: gtk4::Switch,
     require_confirm_elevation: gtk4::Switch,
     hybrid: libadwaita::ComboRow,
@@ -271,6 +285,7 @@ fn commit_focused_spin_row(window: &libadwaita::Window, rows: &ConfigRows) {
         &rows.min_face_size_ratio,
         &rows.liveness_threshold,
         &rows.liveness_max_seconds,
+        &rows.smile_min_ratio,
         &rows.resume_grace,
         &rows.start_delay,
     ] {
@@ -369,6 +384,8 @@ fn populate_config_rows(cfg: &Config, rows: &ConfigRows, choices: CameraChoices<
     rows.liveness_threshold.set_value(cfg.liveness.threshold);
     rows.liveness_max_seconds
         .set_value(cfg.liveness.max_seconds);
+    rows.smile_enabled.set_active(cfg.smile.enabled);
+    rows.smile_min_ratio.set_value(cfg.smile.min_ratio);
     rows.require_confirm_lock_screen
         .set_active(cfg.auth.require_confirmation_lock_screen);
     rows.require_confirm_elevation
@@ -399,6 +416,7 @@ fn populate_config_rows(cfg: &Config, rows: &ConfigRows, choices: CameraChoices<
         &rows.liveness_threshold,
         &rows.liveness_max_seconds,
     );
+    set_smile_config_rows_visible(&rows.smile_enabled, &rows.smile_min_ratio);
     set_keyring_config_sensitivity(
         &rows.unlock_gnome_keyring,
         &rows.unlock_kwallet,
@@ -633,6 +651,29 @@ pub fn show_config_dialog(
     liveness_max_seconds_row.set_subtitle("Maximum seconds analyzed for liveness verification");
     liveness_group.add(&liveness_max_seconds_row);
 
+    let smile_group = libadwaita::PreferencesGroup::new();
+    smile_group.set_title("Smile to Unlock");
+    page.add(&smile_group);
+
+    let smile_enabled_row = libadwaita::ActionRow::new();
+    smile_enabled_row.set_title("Require a smile");
+    smile_enabled_row.set_subtitle(
+        "Only unlock once your recognized face smiles, so a glance at the camera does not",
+    );
+    let smile_enabled_switch = gtk4::Switch::new();
+    smile_enabled_switch.set_valign(gtk4::Align::Center);
+    smile_enabled_row.add_suffix(&smile_enabled_switch);
+    smile_group.add(&smile_enabled_row);
+
+    let smile_min_ratio_row =
+        libadwaita::SpinRow::with_range(MIN_SMILE_MIN_RATIO, MAX_SMILE_MIN_RATIO, 0.01);
+    smile_min_ratio_row.set_digits(2);
+    smile_min_ratio_row.set_title("Smile strength");
+    smile_min_ratio_row.set_subtitle(
+        "Mouth width relative to eye distance; neutral is about 0.85, higher needs a wider smile",
+    );
+    smile_group.add(&smile_min_ratio_row);
+
     let auth_group = libadwaita::PreferencesGroup::new();
     auth_group.set_title("Authentication");
     page.add(&auth_group);
@@ -752,6 +793,12 @@ pub fn show_config_dialog(
                 &liveness_max_seconds_row,
             );
         }
+    ));
+
+    smile_enabled_switch.connect_active_notify(glib::clone!(
+        #[weak]
+        smile_min_ratio_row,
+        move |sw| set_smile_config_rows_visible(sw, &smile_min_ratio_row)
     ));
 
     for switch in [
@@ -921,6 +968,10 @@ pub fn show_config_dialog(
         #[weak]
         liveness_max_seconds_row,
         #[weak]
+        smile_enabled_switch,
+        #[weak]
+        smile_min_ratio_row,
+        #[weak]
         hybrid_row,
         #[weak]
         require_confirm_lock_screen_switch,
@@ -1024,6 +1075,8 @@ pub fn show_config_dialog(
             cfg.liveness.enabled = liveness_enabled_switch.is_active();
             cfg.liveness.threshold = liveness_threshold_row.value();
             cfg.liveness.max_seconds = liveness_max_seconds_row.value();
+            cfg.smile.enabled = smile_enabled_switch.is_active();
+            cfg.smile.min_ratio = smile_min_ratio_row.value();
             cfg.auth.require_confirmation_lock_screen =
                 require_confirm_lock_screen_switch.is_active();
             cfg.auth.require_confirmation_elevation = require_confirm_elevation_switch.is_active();
@@ -1149,6 +1202,7 @@ pub fn show_config_dialog(
         &resume_grace_row,
         &liveness_threshold_row,
         &liveness_max_seconds_row,
+        &smile_min_ratio_row,
     ] {
         row.connect_value_notify(glib::clone!(
             #[strong]
@@ -1160,6 +1214,7 @@ pub fn show_config_dialog(
     for switch in [
         &emitter_switch,
         &liveness_enabled_switch,
+        &smile_enabled_switch,
         &abort_ssh_switch,
         &abort_lid_switch,
         &abort_first_resume_switch,
@@ -1197,6 +1252,8 @@ pub fn show_config_dialog(
         liveness_enabled: liveness_enabled_switch.clone(),
         liveness_threshold: liveness_threshold_row.clone(),
         liveness_max_seconds: liveness_max_seconds_row.clone(),
+        smile_enabled: smile_enabled_switch.clone(),
+        smile_min_ratio: smile_min_ratio_row.clone(),
         require_confirm_lock_screen: require_confirm_lock_screen_switch.clone(),
         require_confirm_elevation: require_confirm_elevation_switch.clone(),
         hybrid: hybrid_row.clone(),
@@ -1657,6 +1714,12 @@ mod tests {
         assert!(!start_delay_scope_visible(-5.0));
         assert!(start_delay_scope_visible(0.5));
         assert!(start_delay_scope_visible(2500.0));
+    }
+
+    #[test]
+    fn smile_strength_follows_the_enabled_switch() {
+        assert!(smile_rows_visible(true));
+        assert!(!smile_rows_visible(false));
     }
 
     #[test]

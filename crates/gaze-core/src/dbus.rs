@@ -249,6 +249,7 @@ impl From<DbusConfig> for Config {
                 unlock_kwallet: false,
             },
             duress: crate::config::DuressConfig::default(),
+            smile: crate::config::SmileConfig::default(),
         }
     }
 }
@@ -686,6 +687,18 @@ pub async fn load_config_with_keyring_from_daemon(
             ));
         }
     };
+    match proxy.smile_requirement().await {
+        Ok((enabled, min_ratio)) => {
+            config.smile.enabled = enabled;
+            config.smile.min_ratio = min_ratio;
+        }
+        Err(error) if dbus_is_unknown_method(&error) => {}
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "Failed to read the smile requirement: {error}"
+            ));
+        }
+    }
     match proxy.ir_frame_size().await {
         Ok((width, height)) => config
             .cameras
@@ -722,8 +735,27 @@ async fn apply_ir_frame_size_to_daemon(
     }
 }
 
+async fn apply_smile_to_daemon(proxy: &GazeProxy<'_>, config: &Config) -> anyhow::Result<()> {
+    config.smile.validate()?;
+    match proxy
+        .set_smile_requirement(config.smile.enabled, config.smile.min_ratio)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(error) if dbus_is_unknown_method(&error) && !config.smile.enabled => Ok(()),
+        Err(error) if dbus_is_unknown_method(&error) => Err(anyhow::anyhow!(
+            "The running daemon does not support requiring a smile. Update gazed or turn \
+             the smile requirement off."
+        )),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to set the smile requirement: {error}"
+        )),
+    }
+}
+
 pub async fn apply_config_to_daemon(proxy: &GazeProxy<'_>, config: &Config) -> anyhow::Result<()> {
     apply_ir_frame_size_to_daemon(proxy, config).await?;
+    apply_smile_to_daemon(proxy, config).await?;
     proxy
         .set_config(config.clone().into())
         .await
@@ -735,6 +767,7 @@ pub async fn apply_config_with_keyring_to_daemon(
     config: &Config,
 ) -> anyhow::Result<()> {
     apply_ir_frame_size_to_daemon(proxy, config).await?;
+    apply_smile_to_daemon(proxy, config).await?;
     let unlock_gnome_keyring = config.storage.unlock_gnome_keyring;
     let unlock_kwallet = config.storage.unlock_kwallet;
     let config = OwnedVariant::try_from(DbusConfig::from(config.clone()))?;
@@ -946,6 +979,10 @@ pub trait Gaze {
 
     #[zbus(allow_interactive_auth)]
     async fn set_ir_frame_size(&self, width: u32, height: u32) -> zbus::Result<()>;
+    async fn smile_requirement(&self) -> zbus::Result<(bool, f64)>;
+
+    #[zbus(allow_interactive_auth)]
+    async fn set_smile_requirement(&self, enabled: bool, min_ratio: f64) -> zbus::Result<()>;
     async fn verify_start_for_kwallet(&self, pam_service: &str) -> zbus::Result<()>;
 
     #[zbus(allow_interactive_auth)]

@@ -136,6 +136,26 @@ pub fn estimate_head_pose(kps: &ndarray::Array3<f32>) -> Option<(f32, f32)> {
     (yaw.is_finite() && pitch.is_finite()).then_some((yaw, pitch))
 }
 
+/// Mouth-corner distance divided by eye distance. Smiling stretches the mouth sideways while the
+/// eyes stay put, so the ratio rises; both spans foreshorten together when the head turns, which
+/// keeps it roughly pose independent without a face mesh.
+pub fn estimate_smile_ratio(kps: &ndarray::Array3<f32>) -> Option<f32> {
+    let shape = kps.shape();
+    if shape[0] < 1 || shape[1] < 5 || shape[2] < 2 {
+        return None;
+    }
+
+    let point = |index| (kps[[0, index, 0]], kps[[0, index, 1]]);
+    let distance = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0).hypot(b.1 - a.1);
+    let eye_distance = distance(point(0), point(1));
+    let mouth_width = distance(point(3), point(4));
+    if !eye_distance.is_finite() || eye_distance <= f32::EPSILON {
+        return None;
+    }
+    let ratio = mouth_width / eye_distance;
+    ratio.is_finite().then_some(ratio)
+}
+
 #[derive(Default)]
 pub struct EnrollmentPoseStability {
     samples: std::collections::VecDeque<(f32, f32)>,
@@ -776,6 +796,50 @@ mod tests {
 
         let malformed = ndarray::Array3::zeros((1, 4, 2));
         assert!(estimate_head_pose(&malformed).is_none());
+    }
+
+    #[test]
+    fn smile_ratio_grows_with_mouth_width_and_ignores_scale_and_roll() {
+        // ArcFace's 112x112 reference landmarks: a typical, roughly neutral mouth.
+        let neutral_points = [
+            (38.29, 51.70),
+            (73.53, 51.50),
+            (56.03, 71.74),
+            (41.55, 92.37),
+            (70.73, 92.20),
+        ];
+        let neutral = estimate_smile_ratio(&landmarks(neutral_points)).unwrap();
+        assert!((0.8..0.9).contains(&neutral), "neutral ratio {neutral}");
+
+        let mut smiling_points = neutral_points;
+        smiling_points[3].0 -= 4.0;
+        smiling_points[4].0 += 4.0;
+        let smiling = estimate_smile_ratio(&landmarks(smiling_points)).unwrap();
+        assert!(
+            smiling > 1.0 && smiling > neutral,
+            "smiling ratio {smiling}"
+        );
+
+        let angle = 0.5_f32;
+        let (sin, cos) = angle.sin_cos();
+        let scaled_rolled = landmarks(
+            smiling_points.map(|(x, y)| (3.0 * (x * cos - y * sin), 3.0 * (x * sin + y * cos))),
+        );
+        let transformed = estimate_smile_ratio(&scaled_rolled).unwrap();
+        assert!((transformed - smiling).abs() < 0.001);
+    }
+
+    #[test]
+    fn smile_ratio_rejects_degenerate_landmarks() {
+        let coincident_eyes = landmarks([
+            (10.0, 10.0),
+            (10.0, 10.0),
+            (10.0, 20.0),
+            (5.0, 30.0),
+            (15.0, 30.0),
+        ]);
+        assert!(estimate_smile_ratio(&coincident_eyes).is_none());
+        assert!(estimate_smile_ratio(&ndarray::Array3::zeros((1, 4, 2))).is_none());
     }
 
     fn gate_frame(luma: f64) -> Mat {

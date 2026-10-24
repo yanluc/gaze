@@ -199,6 +199,58 @@ pub(super) fn process_frame_sync(
 
 // Strip the square padding first, since its black bars read as a replay bezel
 // to the anti-spoof model.
+/// Holds a matched face back until it smiles, so a glance at the camera cannot unlock. Reports the
+/// measured ratio once while waiting and once on acceptance, which is enough to calibrate
+/// `smile.min_ratio` from `gaze auth --verbose` without flooding diagnostics every frame.
+pub(super) struct SmileGate {
+    min_ratio: f32,
+    reported_waiting: bool,
+    reported_accepted: bool,
+}
+
+impl SmileGate {
+    pub(super) fn new(min_ratio: f32) -> Self {
+        Self {
+            min_ratio,
+            reported_waiting: false,
+            reported_accepted: false,
+        }
+    }
+
+    pub(super) fn check(
+        &mut self,
+        kpss: &ndarray::Array3<f32>,
+        spectrum: Spectrum,
+    ) -> (bool, Option<String>) {
+        let ratio = gaze_vision::face::estimate_smile_ratio(kpss);
+        let smiling = ratio.is_some_and(|ratio| ratio >= self.min_ratio);
+        tracing::debug!(
+            ?spectrum,
+            ?ratio,
+            min_ratio = self.min_ratio,
+            smiling,
+            "Smile check"
+        );
+        let ratio_text = ratio.map_or_else(|| "unknown".to_string(), |ratio| format!("{ratio:.2}"));
+        let message = if smiling && !self.reported_accepted {
+            self.reported_accepted = true;
+            Some(format!(
+                "{spectrum:?} smile accepted: smile_ratio={ratio_text}, required={:.2}",
+                self.min_ratio
+            ))
+        } else if !smiling && !self.reported_waiting {
+            self.reported_waiting = true;
+            Some(format!(
+                "{spectrum:?} face matched; waiting for a smile: smile_ratio={ratio_text}, required={:.2}",
+                self.min_ratio
+            ))
+        } else {
+            None
+        };
+        (smiling, message)
+    }
+}
+
 pub(super) fn crop_liveness_face(data: &FaceData) -> anyhow::Result<image::RgbImage> {
     let mat_rgb = data
         .liveness_frame
@@ -380,6 +432,7 @@ impl AuthDaemon {
         )?;
         let hybrid_policy = config.security.hybrid_policy().to_string();
         let duress_cfg = config.duress.clone();
+        let smile_cfg = config.smile.clone();
         if duress_cfg.enabled && self.eye_state.lock().await.is_none() {
             let inference = config.inference.clone();
             let loading = tokio::task::spawn_blocking(move || load_eye_state(&inference));
@@ -599,6 +652,8 @@ impl AuthDaemon {
                     let duress_enabled = duress_cfg.enabled;
                     let duress_threshold = duress_cfg.effective_closed_threshold();
                     let duress_hold = duress_cfg.effective_hold();
+                    let smile_enabled = smile_cfg.enabled;
+                    let smile_min_ratio = smile_cfg.effective_min_ratio();
 
                     rgb_thread = Some(std::thread::spawn(move || {
                         // Set on every exit path (incl. panic) once the RGB camera is released.
@@ -636,6 +691,7 @@ impl AuthDaemon {
                         let mut live_scores: Vec<f32> = Vec::new();
                         let mut landmark_seq: Vec<[(f32, f32); 5]> = Vec::new();
                         let mut duress = DuressTracker::new(duress_hold);
+                        let mut smile = SmileGate::new(smile_min_ratio);
 
                         while let Some(frame) = cam.next_interruptible(&stop_clone) {
                             if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
@@ -754,6 +810,17 @@ impl AuthDaemon {
                                         }
                                     }
 
+                                    if smile_enabled {
+                                        let (smiling, message) = smile.check(&data.kpss, Spectrum::Rgb);
+                                        if let Some(message) = message {
+                                            info!("{message}");
+                                            let _ = tx.blocking_send(VerifyMsg::Diagnostic(message));
+                                        }
+                                        if !smiling {
+                                            continue;
+                                        }
+                                    }
+
                                     let mut liveness_passed = true;
                                     if liveness_enabled {
                                         if let Some(eyes) = eyes_from_kpss(&data.kpss) {
@@ -838,6 +905,8 @@ impl AuthDaemon {
                     let duress_enabled = duress_cfg.enabled;
                     let duress_threshold = duress_cfg.effective_closed_threshold();
                     let duress_hold = duress_cfg.effective_hold();
+                    let smile_enabled = smile_cfg.enabled;
+                    let smile_min_ratio = smile_cfg.effective_min_ratio();
 
                     ir_thread = Some(std::thread::spawn(move || {
                         // Wait for RGB to release its camera before opening IR and firing the emitter,
@@ -878,6 +947,7 @@ impl AuthDaemon {
                         let mut logged_dark_luma = false;
                         let mut landmark_seq: Vec<[(f32, f32); 5]> = Vec::new();
                         let mut duress = DuressTracker::new(duress_hold);
+                        let mut smile = SmileGate::new(smile_min_ratio);
 
                         while let Some(frame) = cam.next_interruptible(&stop_clone) {
                             if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
@@ -965,6 +1035,17 @@ impl AuthDaemon {
                                             return;
                                         }
                                         if closed {
+                                            continue;
+                                        }
+                                    }
+
+                                    if smile_enabled {
+                                        let (smiling, message) = smile.check(&data.kpss, Spectrum::Ir);
+                                        if let Some(message) = message {
+                                            info!("{message}");
+                                            let _ = tx.blocking_send(VerifyMsg::Diagnostic(message));
+                                        }
+                                        if !smiling {
                                             continue;
                                         }
                                     }
@@ -1264,6 +1345,55 @@ impl AuthDaemon {
 mod tests {
     use super::*;
     use gaze_core::dbus::CaptureStatus;
+
+    fn mouth_landmarks(mouth_half_width: f32) -> ndarray::Array3<f32> {
+        let points = [
+            (40.0, 50.0),
+            (80.0, 50.0),
+            (60.0, 70.0),
+            (60.0 - mouth_half_width, 90.0),
+            (60.0 + mouth_half_width, 90.0),
+        ];
+        ndarray::Array3::from_shape_fn((1, 5, 2), |(_, point, axis)| {
+            if axis == 0 {
+                points[point].0
+            } else {
+                points[point].1
+            }
+        })
+    }
+
+    #[test]
+    fn smile_gate_holds_a_neutral_face_and_reports_each_state_once() {
+        let mut gate = SmileGate::new(0.95);
+
+        let (smiling, message) = gate.check(&mouth_landmarks(17.0), Spectrum::Rgb);
+        assert!(!smiling);
+        assert!(
+            message
+                .unwrap()
+                .contains("waiting for a smile: smile_ratio=0.85")
+        );
+        let (smiling, message) = gate.check(&mouth_landmarks(17.0), Spectrum::Rgb);
+        assert!(!smiling && message.is_none());
+
+        let (smiling, message) = gate.check(&mouth_landmarks(21.0), Spectrum::Rgb);
+        assert!(smiling);
+        assert!(
+            message
+                .unwrap()
+                .contains("smile accepted: smile_ratio=1.05")
+        );
+        let (smiling, message) = gate.check(&mouth_landmarks(21.0), Spectrum::Rgb);
+        assert!(smiling && message.is_none());
+    }
+
+    #[test]
+    fn smile_gate_refuses_unreadable_landmarks() {
+        let mut gate = SmileGate::new(0.6);
+        let (smiling, _) = gate.check(&ndarray::Array3::zeros((1, 5, 2)), Spectrum::Ir);
+        assert!(!smiling);
+    }
 
     #[test]
     fn parallel_cameras_have_independent_frame_budgets() {
