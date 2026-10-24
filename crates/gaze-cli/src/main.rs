@@ -604,7 +604,13 @@ async fn handle_auth(
             signal = diagnostic_stream.next() => {
                 let Some(signal) = signal else { break };
                 if let Ok(args) = signal.args() {
-                    diagnostics.push(args.message().to_string());
+                    let message = args.message().to_string();
+                    // Show smile readings live so the required strength can be tuned in place.
+                    if verbose && message.contains("smile_ratio=") {
+                        status_msg = message.clone();
+                        status_tone = Tone::Info;
+                    }
+                    diagnostics.push(message);
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {

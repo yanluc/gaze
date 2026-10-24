@@ -59,6 +59,7 @@ const GDM_DCONF_OVERRIDE_CONTENT: &str =
 const CLAIM_TIMEOUT_SECS: u64 = 300;
 const VERIFY_TOO_DARK_TIMEOUT: Duration = Duration::from_secs(1);
 const LIVENESS_GATE_DIAGNOSTIC: &str = "Face matched, but the liveness check did not pass. Move slightly and try again, or lower liveness.threshold.";
+const SMILE_GATE_DIAGNOSTIC: &str = "Face matched, but the smile never held at smile.min_ratio for half a second before the attempt ended. Smile wider, or lower smile.min_ratio; `gaze auth --verbose` shows the measured smile_ratio.";
 const VERIFY_NO_FACE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounds a face that stays badly framed: it refreshes the no-face deadline without ever
 /// yielding an embedding. Kept under `CAMERA_AUTH_TIMEOUT_SECS` in `pam-gaze`.

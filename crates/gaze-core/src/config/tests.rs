@@ -798,6 +798,7 @@ fn save_to_and_load_from_round_trip() {
         smile: SmileConfig {
             enabled: true,
             min_ratio: 1.1,
+            keep_ratio: 0.9,
         },
     };
 
@@ -841,6 +842,7 @@ fn save_to_and_load_from_round_trip() {
     assert_eq!(loaded.duress.hold_ms, 900);
     assert!(loaded.smile.enabled);
     assert_eq!(loaded.smile.min_ratio, 1.1);
+    assert_eq!(loaded.smile.keep_ratio, 0.9);
 }
 
 #[test]
@@ -848,15 +850,20 @@ fn smile_is_off_by_default_and_falls_back_on_invalid_values() {
     let smile = Config::default().smile;
     assert!(!smile.enabled);
     assert!(smile.validate().is_ok());
-    assert_eq!(smile.effective_min_ratio(), DEFAULT_SMILE_MIN_RATIO as f32);
+    let defaults = (
+        DEFAULT_SMILE_MIN_RATIO as f32,
+        DEFAULT_SMILE_KEEP_RATIO as f32,
+    );
+    assert_eq!(smile.effective_ratios(), defaults);
 
-    for min_ratio in [0.1, 3.0, f64::NAN] {
+    for (min_ratio, keep_ratio) in [(0.1, 0.1), (3.0, 0.8), (f64::NAN, 0.8), (0.9, 0.95)] {
         let bad = SmileConfig {
             enabled: true,
             min_ratio,
+            keep_ratio,
         };
         assert!(bad.validate().is_err());
-        assert_eq!(bad.effective_min_ratio(), DEFAULT_SMILE_MIN_RATIO as f32);
+        assert_eq!(bad.effective_ratios(), defaults);
     }
 }
 
@@ -866,9 +873,13 @@ fn smile_can_be_set_from_the_command_line() {
         .with_key("smile.enabled", "true")
         .unwrap()
         .with_key("smile.min_ratio", "1.05")
+        .unwrap()
+        .with_key("smile.keep_ratio", "0.85")
         .unwrap();
     assert!(config.smile.enabled);
     assert_eq!(config.smile.min_ratio, 1.05);
+    assert_eq!(config.smile.keep_ratio, 0.85);
+    assert!(config.with_key("smile.keep_ratio", "1.2").is_err());
     assert!(Config::default().with_key("smile.min_ratio", "5").is_err());
 }
 

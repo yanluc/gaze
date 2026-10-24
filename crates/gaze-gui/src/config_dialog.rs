@@ -80,8 +80,11 @@ fn smile_rows_visible(enabled: bool) -> bool {
 fn set_smile_config_rows_visible(
     enabled_switch: &gtk4::Switch,
     min_ratio_row: &libadwaita::SpinRow,
+    keep_ratio_row: &libadwaita::SpinRow,
 ) {
-    min_ratio_row.set_visible(smile_rows_visible(enabled_switch.is_active()));
+    let active = smile_rows_visible(enabled_switch.is_active());
+    min_ratio_row.set_visible(active);
+    keep_ratio_row.set_visible(active);
 }
 
 fn keyring_sensitivity(
@@ -256,6 +259,7 @@ struct ConfigRows {
     liveness_max_seconds: libadwaita::SpinRow,
     smile_enabled: gtk4::Switch,
     smile_min_ratio: libadwaita::SpinRow,
+    smile_keep_ratio: libadwaita::SpinRow,
     require_confirm_lock_screen: gtk4::Switch,
     require_confirm_elevation: gtk4::Switch,
     hybrid: libadwaita::ComboRow,
@@ -286,6 +290,7 @@ fn commit_focused_spin_row(window: &libadwaita::Window, rows: &ConfigRows) {
         &rows.liveness_threshold,
         &rows.liveness_max_seconds,
         &rows.smile_min_ratio,
+        &rows.smile_keep_ratio,
         &rows.resume_grace,
         &rows.start_delay,
     ] {
@@ -385,7 +390,9 @@ fn populate_config_rows(cfg: &Config, rows: &ConfigRows, choices: CameraChoices<
     rows.liveness_max_seconds
         .set_value(cfg.liveness.max_seconds);
     rows.smile_enabled.set_active(cfg.smile.enabled);
+    // Start first: it caps the keep row, which would otherwise clamp a valid keep value.
     rows.smile_min_ratio.set_value(cfg.smile.min_ratio);
+    rows.smile_keep_ratio.set_value(cfg.smile.keep_ratio);
     rows.require_confirm_lock_screen
         .set_active(cfg.auth.require_confirmation_lock_screen);
     rows.require_confirm_elevation
@@ -416,7 +423,11 @@ fn populate_config_rows(cfg: &Config, rows: &ConfigRows, choices: CameraChoices<
         &rows.liveness_threshold,
         &rows.liveness_max_seconds,
     );
-    set_smile_config_rows_visible(&rows.smile_enabled, &rows.smile_min_ratio);
+    set_smile_config_rows_visible(
+        &rows.smile_enabled,
+        &rows.smile_min_ratio,
+        &rows.smile_keep_ratio,
+    );
     set_keyring_config_sensitivity(
         &rows.unlock_gnome_keyring,
         &rows.unlock_kwallet,
@@ -668,11 +679,19 @@ pub fn show_config_dialog(
     let smile_min_ratio_row =
         libadwaita::SpinRow::with_range(MIN_SMILE_MIN_RATIO, MAX_SMILE_MIN_RATIO, 0.01);
     smile_min_ratio_row.set_digits(2);
-    smile_min_ratio_row.set_title("Smile strength");
+    smile_min_ratio_row.set_title("Smile to start");
     smile_min_ratio_row.set_subtitle(
-        "Mouth width relative to eye distance; neutral is about 0.85, higher needs a wider smile",
+        "Mouth width relative to eye distance, held for half a second; neutral is about 0.75",
     );
     smile_group.add(&smile_min_ratio_row);
+
+    let smile_keep_ratio_row =
+        libadwaita::SpinRow::with_range(MIN_SMILE_MIN_RATIO, MAX_SMILE_MIN_RATIO, 0.01);
+    smile_keep_ratio_row.set_digits(2);
+    smile_keep_ratio_row.set_title("Keep smiling above");
+    smile_keep_ratio_row
+        .set_subtitle("Lower bar once the smile has started, until the unlock; at most the start");
+    smile_group.add(&smile_keep_ratio_row);
 
     let auth_group = libadwaita::PreferencesGroup::new();
     auth_group.set_title("Authentication");
@@ -798,7 +817,15 @@ pub fn show_config_dialog(
     smile_enabled_switch.connect_active_notify(glib::clone!(
         #[weak]
         smile_min_ratio_row,
-        move |sw| set_smile_config_rows_visible(sw, &smile_min_ratio_row)
+        #[weak]
+        smile_keep_ratio_row,
+        move |sw| set_smile_config_rows_visible(sw, &smile_min_ratio_row, &smile_keep_ratio_row)
+    ));
+    // The daemon rejects a keep ratio above the start ratio, so the row cannot offer one.
+    smile_min_ratio_row.connect_value_notify(glib::clone!(
+        #[weak]
+        smile_keep_ratio_row,
+        move |row| smile_keep_ratio_row.adjustment().set_upper(row.value())
     ));
 
     for switch in [
@@ -972,6 +999,8 @@ pub fn show_config_dialog(
         #[weak]
         smile_min_ratio_row,
         #[weak]
+        smile_keep_ratio_row,
+        #[weak]
         hybrid_row,
         #[weak]
         require_confirm_lock_screen_switch,
@@ -1076,7 +1105,11 @@ pub fn show_config_dialog(
             cfg.liveness.threshold = liveness_threshold_row.value();
             cfg.liveness.max_seconds = liveness_max_seconds_row.value();
             cfg.smile.enabled = smile_enabled_switch.is_active();
-            cfg.smile.min_ratio = smile_min_ratio_row.value();
+            // Spin rows step in binary floats; round so the file reads 0.9, not 0.8999999999999999.
+            let hundredths = |value: f64| (value * 100.0).round() / 100.0;
+            cfg.smile.min_ratio = hundredths(smile_min_ratio_row.value());
+            cfg.smile.keep_ratio =
+                hundredths(smile_keep_ratio_row.value()).min(cfg.smile.min_ratio);
             cfg.auth.require_confirmation_lock_screen =
                 require_confirm_lock_screen_switch.is_active();
             cfg.auth.require_confirmation_elevation = require_confirm_elevation_switch.is_active();
@@ -1203,6 +1236,7 @@ pub fn show_config_dialog(
         &liveness_threshold_row,
         &liveness_max_seconds_row,
         &smile_min_ratio_row,
+        &smile_keep_ratio_row,
     ] {
         row.connect_value_notify(glib::clone!(
             #[strong]
@@ -1254,6 +1288,7 @@ pub fn show_config_dialog(
         liveness_max_seconds: liveness_max_seconds_row.clone(),
         smile_enabled: smile_enabled_switch.clone(),
         smile_min_ratio: smile_min_ratio_row.clone(),
+        smile_keep_ratio: smile_keep_ratio_row.clone(),
         require_confirm_lock_screen: require_confirm_lock_screen_switch.clone(),
         require_confirm_elevation: require_confirm_elevation_switch.clone(),
         hybrid: hybrid_row.clone(),

@@ -275,10 +275,10 @@ impl AuthDaemon {
     async fn smile_requirement(
         &self,
         #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<(bool, f64)> {
+    ) -> fdo::Result<(bool, f64, f64)> {
         Self::ensure_config_read_access(&header).await?;
         let smile = self.current_config().await.smile;
-        Ok((smile.enabled, smile.min_ratio))
+        Ok((smile.enabled, smile.min_ratio, smile.keep_ratio))
     }
 
     async fn set_smile_requirement(
@@ -287,14 +287,22 @@ impl AuthDaemon {
         #[zbus(header)] header: Header<'_>,
         enabled: bool,
         min_ratio: f64,
+        keep_ratio: f64,
     ) -> fdo::Result<()> {
         Self::ensure_authorized(&header, POLKIT_ACTION_MANAGE_CONFIG).await?;
-        let requested = gaze_core::config::SmileConfig { enabled, min_ratio };
+        let requested = gaze_core::config::SmileConfig {
+            enabled,
+            min_ratio,
+            keep_ratio,
+        };
         requested
             .validate()
             .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
         let current = self.current_config().await.smile;
-        if current.enabled == enabled && current.min_ratio == min_ratio {
+        if current.enabled == enabled
+            && current.min_ratio == min_ratio
+            && current.keep_ratio == keep_ratio
+        {
             return Ok(());
         }
         self.apply_config(move |mut config| {

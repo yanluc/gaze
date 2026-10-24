@@ -71,7 +71,8 @@ hold_ms = 600
 
 [smile]
 enabled = false
-min_ratio = 0.95
+min_ratio = 0.90
+keep_ratio = 0.80
 ```
 
 ## Upgrades
@@ -683,7 +684,8 @@ Limits to be aware of:
 ```toml
 [smile]
 enabled = false
-min_ratio = 0.95
+min_ratio = 0.90
+keep_ratio = 0.80
 ```
 
 With `enabled = true`, a recognized face unlocks only while it smiles. A glance at the screen, or someone holding the laptop to your sleeping face, is not enough. The GUI shows it as **Smile to Unlock**.
@@ -691,17 +693,24 @@ With `enabled = true`, a recognized face unlocks only while it smiles. A glance 
 How it works:
 
 - Gaze needs no extra model for this. The face detector already finds five points on your face: both eyes, the nose and both mouth corners. Gaze divides the distance between the mouth corners by the distance between the eyes. A smile pulls the corners outward while the eyes stay put, so the ratio rises.
-- Both distances shrink together when you turn your head or sit farther away, so the ratio barely depends on pose or distance. It works on RGB and IR cameras.
-- Frames that match but do not smile are skipped, not rejected, so you can smile at any point before the attempt times out. Liveness, when enabled, is judged only on smiling frames.
+- Both distances shrink together when you turn your head or sit farther away, so the ratio barely depends on pose or distance. It works on RGB and IR cameras. Each camera judges the smile on its own readings, and while either one holds a smile it counts for both, since RGB often reads smiles weaker than IR. A camera that has stopped no longer counts.
+- The smile starts once the ratio stays at `min_ratio` for half a second. From then on it only has to stay at `keep_ratio` until the unlock. One or two frames below either threshold are forgiven, because the landmarks jitter; a longer dip drops the smile and it has to start again.
+- Liveness looks at every recognized frame, smiling or not, so holding a smile still does not stall it. Unlocking needs both: liveness passed and the smile held at that moment.
 
 Settings:
 
-- `min_ratio` (0.6 to 1.5) is how strong the smile has to be. A relaxed mouth usually measures 0.8 to 0.9 and a clear smile 1.0 or more, but faces differ. Run `gaze auth --verbose` once with a straight face and once smiling: the diagnostics print `waiting for a smile: smile_ratio=…` and `smile accepted: smile_ratio=…`. Pick a value between the two readings.
+- `min_ratio` (0.6 to 1.5) is how wide the smile must be to start.
+- `keep_ratio` (0.6 to 1.5, at most `min_ratio`) is how wide it must stay afterwards.
+
+A relaxed mouth usually measures about 0.70 to 0.80 and a clear smile 0.85 to 0.95, but faces and cameras differ: an IR camera can read a few hundredths higher than RGB. To calibrate, run `gaze auth --verbose`. While it waits, the status line shows the live reading, such as `smile holding 200/500 ms: smile_ratio=0.91, best=0.93, start=0.90, keep=0.80`, and the full trace is printed at the end. Put `keep_ratio` just above your straight-face readings and `min_ratio` just below your easy smile.
+
+When an attempt fails, the last message says which check held it back: no `face matched` line means the face was not recognized, a message about `smile.min_ratio` means the smile never started, and the liveness message means you smiled but the liveness check did not pass.
 
 Limits to be aware of:
 
 - This prevents accidental unlocks. It is not anti-spoofing: a photo of you smiling still has a smiling mouth. Keep `[liveness]` on for that.
 - Wide-mouthed expressions other than a smile, such as a grimace, also raise the ratio.
+- The smile has to start within the normal attempt budget (`liveness.max_seconds`), so smile early.
 
 ## Recommended tuning workflow
 

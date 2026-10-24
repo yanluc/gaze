@@ -688,9 +688,10 @@ pub async fn load_config_with_keyring_from_daemon(
         }
     };
     match proxy.smile_requirement().await {
-        Ok((enabled, min_ratio)) => {
+        Ok((enabled, min_ratio, keep_ratio)) => {
             config.smile.enabled = enabled;
             config.smile.min_ratio = min_ratio;
+            config.smile.keep_ratio = keep_ratio;
         }
         Err(error) if dbus_is_unknown_method(&error) => {}
         Err(error) => {
@@ -738,7 +739,11 @@ async fn apply_ir_frame_size_to_daemon(
 async fn apply_smile_to_daemon(proxy: &GazeProxy<'_>, config: &Config) -> anyhow::Result<()> {
     config.smile.validate()?;
     match proxy
-        .set_smile_requirement(config.smile.enabled, config.smile.min_ratio)
+        .set_smile_requirement(
+            config.smile.enabled,
+            config.smile.min_ratio,
+            config.smile.keep_ratio,
+        )
         .await
     {
         Ok(()) => Ok(()),
@@ -979,10 +984,15 @@ pub trait Gaze {
 
     #[zbus(allow_interactive_auth)]
     async fn set_ir_frame_size(&self, width: u32, height: u32) -> zbus::Result<()>;
-    async fn smile_requirement(&self) -> zbus::Result<(bool, f64)>;
+    async fn smile_requirement(&self) -> zbus::Result<(bool, f64, f64)>;
 
     #[zbus(allow_interactive_auth)]
-    async fn set_smile_requirement(&self, enabled: bool, min_ratio: f64) -> zbus::Result<()>;
+    async fn set_smile_requirement(
+        &self,
+        enabled: bool,
+        min_ratio: f64,
+        keep_ratio: f64,
+    ) -> zbus::Result<()>;
     async fn verify_start_for_kwallet(&self, pam_service: &str) -> zbus::Result<()>;
 
     #[zbus(allow_interactive_auth)]
